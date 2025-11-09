@@ -147,32 +147,57 @@ class EchoEnvironment():
             done=stop_conditions,
         )
 
-@dataclass
-class EnvironmentActor(ForgeActor):
-    """Environment actor for GRPO training."""
 
-    @endpoint
-    def setup(self):
-        """Initialize environment"""
-        self._env = EchoEnvironment()
 
-    @endpoint
-    async def reset(self):
-        """Returns: {prompt, target, env_state}"""
-        self._env.reset()
+async def rollout_single_trajectory(
+    initial_response: Completion,
+    policy: Policy,
+    tokenizer: AnyTokenizer,
+    system_prompt: str,
+    raw_question: str,
+) -> Completion:
+    """
+    Rollout a single trajectory through the environment starting from an initial response.
 
-    @endpoint
-    async def step(self, action: EnvAction) -> EnvObservation:
-        """Returns: EnvObservation"""
-        return self._env.step(action)
+    Returns the final completed response after environment interaction.
+    """
+    env = EchoEnvironment()
 
-    @endpoint
-    async def get_next_observation(self, messages: list[dict]) -> tuple[list[dict], float, bool]:
-        """Step the environment and return (messages, reward, done)"""
-        env_action = EnvAction(messages=messages)
-        env_observation = self._env.step(env_action)
-        return env_observation.messages, env_observation.reward, env_observation.done
+    chat_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": raw_question},
+        {"role": "assistant", "content": initial_response.text}
+    ]
 
+
+    # Get first observation
+    env_action = EnvAction(messages=chat_messages)
+    env_observation = env.step(env_action)
+    current_messages, reward, done = env_observation.messages, env_observation.reward, env_observation.done
+
+    # Continue interaction until environment signals done
+    latest_response = initial_response
+    while not done:
+        # Format messages for policy
+        flattened_messages = tokenizer.apply_chat_template(
+            current_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        # Generate next response from policy
+        new_responses: list[Completion] = await policy.generate.route(flattened_messages)
+        latest_response = new_responses[0]  # Take first completion
+
+        # Add to conversation
+        current_messages.append({"role": "assistant", "content": latest_response.text})
+
+        # Step environment
+        env_action = EnvAction(messages=current_messages)
+        env_observation = env.step(env_action)
+        current_messages, reward, done = env_observation.messages, env_observation.reward, env_observation.done
+
+    return latest_response
 
 
 async def main(cfg: DictConfig):
@@ -197,7 +222,6 @@ async def main(cfg: DictConfig):
     # ---- Setup services ---- #
 
     (
-        environment_actor,
         dataloader,
         policy,
         trainer,
@@ -206,7 +230,6 @@ async def main(cfg: DictConfig):
         ref_model,
         reward_actor,
     ) = await asyncio.gather(
-        EnvironmentActor.options(**cfg.services.environment).as_service(),
         DatasetActor.options(**cfg.actors.dataset).as_actor(**cfg.dataset),
         Policy.options(**cfg.services.policy).as_service(**cfg.policy),
         RLTrainer.options(**cfg.actors.trainer).as_actor(
@@ -245,6 +268,7 @@ async def main(cfg: DictConfig):
     async def continuous_rollouts():
         rollout_count = 0
         pad_id = await dataloader.pad_token.call_one()
+        env = EchoEnvironment()  # Create environment instance directly
         while not shutdown_event.is_set():
             t = Tracer("main_perf/continuous_rollouts")
             t.start()
@@ -266,40 +290,10 @@ async def main(cfg: DictConfig):
 
             # Rollout with environment interaction
             for response in responses:
-                # Initialize environment state with initial response
-                chat_messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": raw_question},
-                    {"role": "assistant", "content": response.text}
-                ]
-
-                # Reset environment for this episode
-                await environment_actor.reset.route()
-
-                # Get first observation
-                current_messages, reward, done = await environment_actor.get_next_observation.route(chat_messages)
-
-                # Continue interaction until environment signals done
-                latest_response = response
-                while not done:
-                    # Format messages for policy
-                    flattened_messages = tokenizer.apply_chat_template(
-                        current_messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-
-                    # Generate next response from policy
-                    new_responses: list[Completion] = await policy.generate.route(flattened_messages)
-                    latest_response = new_responses[0]  # Take first completion
-
-                    # Add to conversation
-                    current_messages.append({"role": "assistant", "content": latest_response.text})
-
-                    # Step environment
-                    current_messages, reward, done = await environment_actor.get_next_observation.route(current_messages)
-
-                completed_trajectories.append(latest_response)
+                completed_trajectory = await rollout_single_trajectory(
+                    response, policy, tokenizer, system_prompt, raw_question
+                )
+                completed_trajectories.append(completed_trajectory)
 
             episodes = []
             # Construct episodes and calculate rewards
