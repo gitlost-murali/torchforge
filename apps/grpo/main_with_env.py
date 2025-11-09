@@ -10,7 +10,6 @@ import asyncio
 import uuid
 
 from datasets import load_dataset
-from pydantic import BaseModel
 import torch
 import torchstore as ts
 from forge.actors.reference_model import ReferenceModel
@@ -34,6 +33,7 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer, get_tokenizer
 from apps.grpo.main import Policy, ComputeAdvantages, \
                 RewardActor, Episode, simple_grpo_loss, \
                 collate, drop_weights
+from forge.envs import EnvAction, EnvObservation, EchoEnvironment
 
 @dataclass
 class DatasetActor(ForgeActor):
@@ -114,41 +114,6 @@ class DatasetActor(ForgeActor):
         return self._tokenizer
 
 
-
-class EnvState(BaseModel):
-    episode_id: str
-    step: int
-
-class EnvAction(BaseModel):
-    messages: list[dict]
-
-class EnvObservation(BaseModel):
-    messages: list[dict]
-    reward: float
-    done: bool
-
-class EchoEnvironment():
-    def __init__(self):
-        self.env_state = EnvState(episode_id=str(uuid.uuid4()), step=0)
-        self._reset_env_counter = 0
-        self.max_steps = 1
-
-    def reset(self) -> EnvObservation:
-        self.env_state = EnvState(episode_id=str(uuid.uuid4()), step=0)
-        self._reset_env_counter += 1
-        return EnvObservation(messages=[], reward=0.0, done=False)
-
-    def step(self, action: EnvAction) -> EnvObservation:
-        self.env_state.step += 1
-        stop_conditions = self.env_state.step >= self.max_steps
-        return EnvObservation(
-            messages=action.messages, # No change since echo environment doesn't change the messages
-            reward=1.0,
-            done=stop_conditions,
-        )
-
-
-
 async def rollout_single_trajectory(
     initial_response: Completion,
     policy: Policy,
@@ -170,34 +135,28 @@ async def rollout_single_trajectory(
     ]
 
 
-    # Get first observation
-    env_action = EnvAction(messages=chat_messages)
-    env_observation = env.step(env_action)
-    current_messages, reward, done = env_observation.messages, env_observation.reward, env_observation.done
+    env_observation = env.step(EnvAction(messages=chat_messages))
+    current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
 
     # Continue interaction until environment signals done
     latest_response = initial_response
     while not done:
-        # Format messages for policy
-        flattened_messages = tokenizer.apply_chat_template(
+        flattened_input_prompt = tokenizer.apply_chat_template(
             current_messages,
             tokenize=False,
             add_generation_prompt=True,
         )
 
-        # Generate next response from policy with n=1 (overrides default sampling_params.n)
         new_responses: list[Completion] = await policy.generate.route(
-            flattened_messages, n=1
+            flattened_input_prompt, n=1
         )
         latest_response = new_responses[0]  # Take first (and only) completion
 
-        # Add to conversation
         current_messages.append({"role": "assistant", "content": latest_response.text})
 
         # Step environment
-        env_action = EnvAction(messages=current_messages)
-        env_observation = env.step(env_action)
-        current_messages, reward, done = env_observation.messages, env_observation.reward, env_observation.done
+        env_observation = env.step(EnvAction(messages=current_messages))
+        current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
 
     return latest_response
 
