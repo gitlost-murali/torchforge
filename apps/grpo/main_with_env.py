@@ -15,7 +15,7 @@ import torch
 import torchstore as ts
 from forge.actors.reference_model import ReferenceModel
 from forge.actors.replay_buffer import ReplayBuffer
-from forge.actors.trainer import RLTrainer
+from forge.actors.trainer import TitanTrainer
 from forge.controller.actor import ForgeActor
 from forge.controller.provisioner import init_provisioner, shutdown
 from forge.data.rewards import MathReward, ThinkingReward
@@ -232,7 +232,7 @@ async def main(cfg: DictConfig):
     ) = await asyncio.gather(
         DatasetActor.options(**cfg.actors.dataset).as_actor(**cfg.dataset),
         Policy.options(**cfg.services.policy).as_service(**cfg.policy),
-        RLTrainer.options(**cfg.actors.trainer).as_actor(
+        TitanTrainer.options(**cfg.actors.trainer).as_actor(
             **cfg.trainer, loss=simple_grpo_loss
         ),
         ReplayBuffer.options(**cfg.actors.replay_buffer).as_actor(
