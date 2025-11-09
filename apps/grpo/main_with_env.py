@@ -185,9 +185,11 @@ async def rollout_single_trajectory(
             add_generation_prompt=True,
         )
 
-        # Generate next response from policy
-        new_responses: list[Completion] = await policy.generate.route(flattened_messages)
-        latest_response = new_responses[0]  # Take first completion
+        # Generate next response from policy with n=1 (overrides default sampling_params.n)
+        new_responses: list[Completion] = await policy.generate.route(
+            flattened_messages, n=1
+        )
+        latest_response = new_responses[0]  # Take first (and only) completion
 
         # Add to conversation
         current_messages.append({"role": "assistant", "content": latest_response.text})
