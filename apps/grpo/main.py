@@ -28,6 +28,7 @@ from forge.controller.actor import ForgeActor
 from forge.controller.provisioner import init_provisioner, shutdown
 from forge.data.rewards import MathReward, ThinkingReward
 from forge.data_models.completion import Completion
+from forge.envs import EnvAction, EchoEnvironment
 from forge.observability.metric_actors import get_or_create_metric_logger
 from forge.observability.metrics import record_metric, Reduce
 from forge.observability.perf_tracker import Tracer
@@ -231,7 +232,12 @@ class DatasetActor(ForgeActor):
             )
             target: str = sample["answer"]
             formatted_target = target.split("#### ")[1]
-            return {"request": formatted_request, "target": formatted_target}
+            return {
+                    "request": formatted_request,
+                    "target": formatted_target,
+                    "raw_question": request,
+                    "system_prompt": system_prompt.strip()
+                    }
 
         self._base_dataset = load_dataset(
             self.path, self.revision, split=self.data_split, streaming=self.streaming
@@ -267,6 +273,57 @@ class DatasetActor(ForgeActor):
     @endpoint
     async def pad_token(self):
         return self._tokenizer.pad_token_id
+
+    @endpoint
+    async def get_tokenizer(self):
+        return self._tokenizer
+
+
+async def rollout_single_trajectory(
+    initial_response: Completion,
+    policy: Policy,
+    tokenizer,
+    system_prompt: str,
+    raw_question: str,
+) -> Completion:
+    """
+    Rollout a single trajectory through the environment starting from an initial response.
+
+    Returns the final completed response after environment interaction.
+    """
+    env = EchoEnvironment()
+
+    chat_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": raw_question},
+        {"role": "assistant", "content": initial_response.text}
+    ]
+
+
+    env_observation = env.step(EnvAction(messages=chat_messages))
+    current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
+
+    # Continue interaction until environment signals done
+    latest_response = initial_response
+    while not done:
+        flattened_input_prompt = tokenizer.apply_chat_template(
+            current_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        new_responses: list[Completion] = await policy.generate.route(
+            flattened_input_prompt, n=1
+        )
+        latest_response = new_responses[0]  # Take first (and only) completion
+
+        current_messages.append({"role": "assistant", "content": latest_response.text})
+
+        # Step environment
+        env_observation = env.step(EnvAction(messages=current_messages))
+        current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
+
+    return latest_response
 
 
 async def drop_weights(version: int):
@@ -354,6 +411,7 @@ async def main(cfg: DictConfig):
     async def continuous_rollouts():
         rollout_count = 0
         pad_id = await dataloader.pad_token.call_one()
+        env = EchoEnvironment()  # Create environment instance directly
         while not shutdown_event.is_set():
             t = Tracer("main_perf/continuous_rollouts")
             t.start()
@@ -365,26 +423,38 @@ async def main(cfg: DictConfig):
             t.step("data_loading")
 
             prompt, target = sample["request"], sample["target"]
+            raw_question, system_prompt = sample["raw_question"], sample["system_prompt"]
             responses: list[Completion] = await policy.generate.route(prompt)
             t.step("policy_generation")
 
-            # Construct episodes and calculate rewards
+            completed_trajectories = []
+
+            tokenizer = await dataloader.get_tokenizer.call_one()
+
+            # Rollout with environment interaction
+            for response in responses:
+                completed_trajectory = await rollout_single_trajectory(
+                    response, policy, tokenizer, system_prompt, raw_question
+                )
+                completed_trajectories.append(completed_trajectory)
+
             episodes = []
+            # Construct episodes and calculate rewards
             input_ids = torch.ones(
                 (group_size, max_req_tokens + max_res_tokens),
                 dtype=torch.long,
             )
-            for i, response in enumerate(responses):
+            for i, completed_trajectory in enumerate(completed_trajectories):
                 episode = Episode(
                     episode_id=str(uuid.uuid4()),
                     pad_id=pad_id,
                     request_len=max_req_tokens,
                     response_len=max_res_tokens,
                     target=target,
-                    completion=response,
+                    completion=completed_trajectory,
                 )
                 episode.reward = await reward_actor.evaluate_response.route(
-                    prompt=prompt, response=response.text, target=target
+                    prompt=prompt, response=completed_trajectory.text, target=target
                 )
                 episodes.append(episode)
 

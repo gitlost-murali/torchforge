@@ -1,14 +1,32 @@
+"""
+Unit tests for environment-based rollout function in GRPO.
+
+These tests verify that rollout_single_trajectory with EchoEnvironment maintains
+backward compatibility and doesn't change the functional behavior of GRPO.
+
+EchoEnvironment behavior:
+- Completes after a single step (done=True immediately)
+- Returns input messages unchanged
+- Always returns reward=1.0
+
+Expected rollout_single_trajectory behavior with EchoEnvironment:
+- Returns the initial response unchanged
+- Does NOT trigger additional policy.generate calls
+- Is functionally equivalent to the original non-environment rollout
+
+This ensures the environment integration is a no-op when using EchoEnvironment.
+"""
+
 import torch
 from forge.data_models.prompt import Prompt, Message, Role
 import pytest
 from unittest.mock import AsyncMock
-from forge.envs import EchoEnvironment
 from forge.data_models.completion import Completion
-from apps.grpo.main_with_env import rollout_single_trajectory
+from apps.grpo.main import rollout_single_trajectory
 
 
 @pytest.fixture
-def mock_policy():
+def mock_policy_to_call_from_within_rollout():
     """Create a mock policy for testing."""
     policy = AsyncMock()
     # Mock the generate.route method to return a completion
@@ -45,7 +63,7 @@ def initial_completion():
 
 @pytest.mark.asyncio
 async def test_rollout_single_trajectory_with_echo_environment(
-    mock_policy,
+    mock_policy_to_call_from_within_rollout,
     mock_tokenizer,
     initial_completion
 ):
@@ -63,7 +81,7 @@ async def test_rollout_single_trajectory_with_echo_environment(
     # Run the rollout
     result = await rollout_single_trajectory(
         initial_response=initial_completion,
-        policy=mock_policy,
+        policy=mock_policy_to_call_from_within_rollout,
         tokenizer=mock_tokenizer,
         system_prompt=system_prompt,
         raw_question=raw_question
@@ -75,4 +93,4 @@ async def test_rollout_single_trajectory_with_echo_environment(
 
     # Verify that policy.generate.route was NOT called because the environment
     # completed before the while loop could execute
-    mock_policy.generate.route.assert_not_called()
+    mock_policy_to_call_from_within_rollout.generate.route.assert_not_called()
