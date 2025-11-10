@@ -272,7 +272,12 @@ class DatasetActor(ForgeActor):
 
     @endpoint
     async def pad_token(self):
-        return self._tokenizer.pad_token_id
+        # Use pad_token_id if available, otherwise use eos_token_id
+        # Llama models don't have a pad token by default
+        if self._tokenizer.pad_token_id is not None:
+            return self._tokenizer.pad_token_id
+        else:
+            return self._tokenizer.eos_token_id
 
     @endpoint
     async def get_tokenizer(self):
