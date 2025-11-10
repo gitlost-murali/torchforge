@@ -281,13 +281,24 @@ class DatasetActor(ForgeActor):
 
 async def rollout_single_trajectory(
     initial_response: Completion,
-    policy: Policy,
-    tokenizer,
+    policy: Policy, # TODO: would be used in multi-turn environment interaction with n = 1 samples from policy.generate.route
+    tokenizer, # TODO: would be used in multi-turn environment interaction
     system_prompt: str,
     raw_question: str,
 ) -> Completion:
     """
     Rollout a single trajectory through the environment starting from an initial response.
+
+    NOTE: Currently only supports single-step environments (like EchoEnvironment).
+    Multi-turn environment interaction is NOT implemented. Attempting to use a multi-step
+    environment will raise NotImplementedError.
+
+    TODO: Implement full multi-turn support:
+      - Add while loop to continue interaction until environment signals done
+      - Track all completions in the trajectory, not just the initial one
+      - Properly accumulate or structure rewards across turns
+      - Update Episode dataclass to handle multi-turn conversations
+      - Fix reference logprob calculation for multi-turn context
 
     Returns the final completed response after environment interaction.
     """
@@ -301,29 +312,21 @@ async def rollout_single_trajectory(
 
 
     env_observation = env.step(EnvAction(messages=chat_messages))
-    current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
+    _current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
 
-    # Continue interaction until environment signals done
-    latest_response = initial_response
-    while not done:
-        flattened_input_prompt = tokenizer.apply_chat_template(
-            current_messages,
-            tokenize=False,
-            add_generation_prompt=True,
+    # Safety check: ensure we're not silently producing wrong results with multi-turn envs
+    # Check immediately after first step - if environment wants to continue, it's multi-turn
+    if not done:
+        raise NotImplementedError(
+            f"Multi-turn environment interaction is not fully implemented. "
+            f"Environment did not complete after first step (done={done}), indicating a multi-turn "
+            f"scenario. Current implementation only correctly handles single-step environments. "
+            f"The returned completion, reward calculation, and episode tracking are incomplete "
+            f"for multi-turn scenarios."
         )
 
-        new_responses: list[Completion] = await policy.generate.route(
-            flattened_input_prompt, n=1
-        )
-        latest_response = new_responses[0]  # Take first (and only) completion
-
-        current_messages.append({"role": "assistant", "content": latest_response.text})
-
-        # Step environment
-        env_observation = env.step(EnvAction(messages=current_messages))
-        current_messages, _reward, done = env_observation.messages, env_observation.reward, env_observation.done
-
-    return latest_response
+    # For single-step environments, the initial response is the final result
+    return initial_response
 
 
 async def drop_weights(version: int):
