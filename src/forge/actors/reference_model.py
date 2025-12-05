@@ -194,6 +194,8 @@ class ReferenceModel(ForgeActor):
             if parallel_dims.tp_enabled and isinstance(logits, DTensor):
                 with loss_parallel():
                     logprobs = compute_logprobs(logits, response_tokens, align=True)
+
+                logprobs = logprobs.to_local()
             else:
                 logprobs = compute_logprobs(logits, response_tokens)
             t.step("compute_logprobs")
