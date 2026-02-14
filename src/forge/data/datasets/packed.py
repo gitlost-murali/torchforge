@@ -5,9 +5,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
-from abc import ABC, abstractmethod
 from collections import deque
-from typing import Any, Generic, Iterable, Iterator, TypeVar
+from typing import (
+    Any,
+    Generic,
+    Iterable,
+    Iterator,
+    Protocol,
+    runtime_checkable,
+    TypeVar,
+)
 
 import torch
 from forge.data import CROSS_ENTROPY_IGNORE_IDX
@@ -33,9 +40,10 @@ SampleType = TypeVar("SampleType")
 SampleDict = dict[str, Any]
 
 
-class Packer(ABC, Generic[SampleType]):
+@runtime_checkable
+class Packer(Protocol[SampleType]):
     """
-    An abstract base class that defines the **format** for packing samples into a
+    A protocol that defines the **format** for packing samples into a
     fixed-size sequence. It is used by `PackedDataset` to handle
     different cases, e.g., standard text, DPO pairs.
 
@@ -70,11 +78,9 @@ class Packer(ABC, Generic[SampleType]):
         RuntimeError: If FlexAttention is not supported in the current environment.
     """
 
-    def __init__(self, padding_idx: int, ignore_idx: int = CROSS_ENTROPY_IGNORE_IDX):
-        self.padding_idx = padding_idx
-        self.ignore_idx = ignore_idx
+    padding_idx: int
+    ignore_idx: int
 
-    @abstractmethod
     def set_dataset_name(self, dataset_name: str) -> None:
         """
         Sets the dataset name on the packer.
@@ -82,9 +88,8 @@ class Packer(ABC, Generic[SampleType]):
         Args:
             dataset_name (str): The name of the dataset.
         """
-        pass
+        ...
 
-    @abstractmethod
     def create_empty_pack(self) -> dict[str, list[Any]]:
         """
         Creates an empty pack structure for accumulating samples.
@@ -97,9 +102,8 @@ class Packer(ABC, Generic[SampleType]):
             >>> packer.create_empty_pack()
             {"tokens": [], "labels": []}
         """
-        pass
+        ...
 
-    @abstractmethod
     def get_sample_size(self, sample: SampleType) -> int:
         """
         Returns the size of a sample. This can be complex for some cases,
@@ -116,9 +120,8 @@ class Packer(ABC, Generic[SampleType]):
             self.get_sample_size(sample)
             >>> 100
         """
-        pass
+        ...
 
-    @abstractmethod
     def add_sample_to_pack(
         self, pack: dict[str, list[Any]], sample: SampleType, next_doc_id: int
     ) -> int:
@@ -154,9 +157,8 @@ class Packer(ABC, Generic[SampleType]):
             >>> print(added_docs)
             1
         """
-        pass
+        ...
 
-    @abstractmethod
     def finalize_pack(
         self, pack: dict[str, list[Any]], target_tokens_per_pack: int, next_doc_id: int
     ) -> SampleDict:
@@ -186,9 +188,8 @@ class Packer(ABC, Generic[SampleType]):
              "document_ids": torch.tensor([0, 0, 1, 1]),
              "input_pos": torch.tensor([0, 1, 0, 0]), "metrics": [...]}
         """
-        pass
+        ...
 
-    @abstractmethod
     def _mask_mod(
         self,
         b: int,
@@ -215,7 +216,7 @@ class Packer(ABC, Generic[SampleType]):
         Returns:
             torch.Tensor: A boolean tensor indicating which query/key pairs are allowed to attend.
         """
-        pass
+        ...
 
     def create_block_mask(
         self, batch_document_ids: torch.Tensor, device: torch.device
@@ -506,7 +507,8 @@ class TextPacker(Packer[SampleDict]):
     """
 
     def __init__(self, padding_idx: int, ignore_idx: int = CROSS_ENTROPY_IGNORE_IDX):
-        super().__init__(padding_idx, ignore_idx)
+        self.padding_idx = padding_idx
+        self.ignore_idx = ignore_idx
 
         # Define which keys are handled specially vs. appended as arbitrary data
         self.expected_keys = {
@@ -687,7 +689,8 @@ class DPOPacker(Packer[SampleDict]):
     """
 
     def __init__(self, padding_idx: int, ignore_idx: int = CROSS_ENTROPY_IGNORE_IDX):
-        super().__init__(padding_idx, ignore_idx)
+        self.padding_idx = padding_idx
+        self.ignore_idx = ignore_idx
 
         self.expected_keys = {
             "prompt_ids",

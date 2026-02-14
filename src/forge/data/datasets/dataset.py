@@ -6,7 +6,6 @@
 
 import logging
 import math
-from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -60,7 +59,7 @@ class DatasetInfo:
     children: tuple["DatasetInfo", ...] = field(default_factory=tuple)
 
 
-class TuneIterableDataset(IterableDataset, ABC):
+class TuneIterableDataset(IterableDataset):
     """Base class for all forge iterable datasets.
 
     Datasets are composable, enabling complex structures such as:
@@ -72,11 +71,10 @@ class TuneIterableDataset(IterableDataset, ABC):
     """
 
     @property
-    @abstractmethod
     def info(self) -> DatasetInfo:
         """Returns a hierarchical structure of all dataset information, including
         this dataset and its children."""
-        pass
+        raise NotImplementedError
 
     def _validate_unique_dataset_names(self) -> None:
         """Traverses the DatasetInfo tree and raises ValueError on duplicate names."""
@@ -96,22 +94,19 @@ class TuneIterableDataset(IterableDataset, ABC):
                 f"Duplicate dataset names found in hierarchy: {duplicates=}, all names={names}"
             )
 
-    @abstractmethod
     def __iter__(self) -> Iterator[dict[str, Any]]:
         """Returns an iterator over the dataset. Each implementation is responsible
         for its own iteration logic, including shuffling, distribution of data across ranks,
         and making it an infinite stream."""
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def state_dict(self) -> dict[str, Any]:
         """Returns checkpoint state for dataset resumption."""
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Restores dataset state from checkpoint."""
-        pass
+        raise NotImplementedError
 
 
 class InfiniteTuneIterableDataset(TuneIterableDataset):

@@ -12,9 +12,8 @@ including session management, context propagation, and dynamic endpoint registra
 
 import contextvars
 import logging
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, ParamSpec, TypeVar
+from typing import Generic, ParamSpec, Protocol, runtime_checkable, TypeVar
 
 from monarch._src.actor.endpoint import EndpointProperty
 
@@ -308,10 +307,10 @@ class ServiceInterfaceV2:
         )
 
 
-class Router(ABC):
-    """Abstract base class for routing logic."""
+@runtime_checkable
+class Router(Protocol):
+    """Protocol for routing logic."""
 
-    @abstractmethod
     def get_replica(
         self,
         healthy_replicas: list[Replica],
@@ -319,4 +318,4 @@ class Router(ABC):
         session_map: dict[str, int] | None = None,
     ) -> Replica:
         """Select a replica from the list based on routing logic."""
-        pass
+        ...

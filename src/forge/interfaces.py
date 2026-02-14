@@ -4,19 +4,18 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from abc import ABC, abstractmethod
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from forge.types import Message, Scalar
 
 
-class BaseTokenizer(ABC):
+@runtime_checkable
+class BaseTokenizer(Protocol):
     """
     Abstract token encoding model that implements ``encode`` and ``decode`` methods.
     See :class:`forge.data.HuggingFaceModelTokenizer for an example implementation of this protocol.
     """
 
-    @abstractmethod
     def encode(self, text: str, **kwargs: dict[str, Any]) -> list[int]:
         """
         Given a string, return the encoded list of token ids.
@@ -28,9 +27,8 @@ class BaseTokenizer(ABC):
         Returns:
             list[int]: The encoded list of token ids.
         """
-        pass
+        ...
 
-    @abstractmethod
     def decode(self, token_ids: list[int], **kwargs: dict[str, Any]) -> str:
         """
         Given a list of token ids, return the decoded text, optionally including special tokens.
@@ -42,10 +40,11 @@ class BaseTokenizer(ABC):
         Returns:
             str: The decoded text.
         """
-        pass
+        ...
 
 
-class ModelTokenizer(ABC):
+@runtime_checkable
+class ModelTokenizer(Protocol):
     """
     Abstract tokenizer that implements model-specific special token logic in
     the ``tokenize_messages`` method. See :class:`forge.data.HuggingFaceModelTokenizer`
@@ -55,7 +54,6 @@ class ModelTokenizer(ABC):
     special_tokens: dict[str, int]
     max_seq_len: int | None
 
-    @abstractmethod
     def tokenize_messages(
         self, messages: list[Message], **kwargs: dict[str, Any]
     ) -> tuple[list[int], list[bool]]:
@@ -70,13 +68,13 @@ class ModelTokenizer(ABC):
         Returns:
             tuple[list[int], list[bool]]: The list of token ids and the list of masks.
         """
-        pass
+        ...
 
 
-class MetricLogger(ABC):
+@runtime_checkable
+class MetricLogger(Protocol):
     """Abstract metric logger."""
 
-    @abstractmethod
     def is_log_step(self, name: str, step: int) -> bool:
         """Returns true if the current step is a logging step.
 
@@ -84,9 +82,8 @@ class MetricLogger(ABC):
             name (str): metric name (for checking the freq for this metric)
             step (int): current step
         """
-        pass
+        ...
 
-    @abstractmethod
     def log(self, name: str, data: Scalar, step: int) -> None:
         """Log scalar data if this is a logging step.
 
@@ -95,9 +92,8 @@ class MetricLogger(ABC):
             data (Scalar): scalar data to log
             step (int): step value to record
         """
-        pass
+        ...
 
-    @abstractmethod
     def log_dict(self, metrics: Mapping[str, Scalar], step: int) -> None:
         """Log multiple scalar values if this is a logging step.
 
@@ -105,7 +101,7 @@ class MetricLogger(ABC):
             metrics (Mapping[str, Scalar]): dictionary of tag name and scalar value
             step (int): step value to record
         """
-        pass
+        ...
 
     def __del__(self) -> None:
         self.close()

@@ -11,10 +11,9 @@ import json
 import logging
 import os
 import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Protocol, runtime_checkable
 
 from forge.observability.utils import get_proc_name_with_rank
 from forge.util.logging import get_logger, log_once
@@ -213,46 +212,41 @@ def reduce_metrics_states(states: list[dict[str, dict[str, Any]]]) -> list[Metri
 ################
 
 
-class MetricAccumulator(ABC):
+@runtime_checkable
+class MetricAccumulator(Protocol):
     """Every metric maps to a MetricAccumulator, which accumulates values and optionally reduces them."""
 
+    reduction_type: Reduce
+    is_reset: bool
+
+    def append(self, value: Any) -> None:
+        """Updates accumulator with new value (e.g., adds to sum and count for MEAN)."""
+        ...
+
+    def get_value(self) -> Any:
+        """Returns locally reduced value (e.g., sum/count for MEAN)."""
+        ...
+
+    def get_state(self) -> dict[str, Any]:
+        """Returns serializable state for cross-rank merge (e.g., {'sum': 10.0, 'count': 5})."""
+        ...
+
+    @classmethod
+    def get_reduced_value_from_states(cls, states: list[dict[str, Any]]) -> Any:
+        """Merges states from multiple ranks into single reduced value (e.g., total_sum/total_count for MEAN)."""
+        ...
+
+    def reset(self) -> None:
+        """Clears for next accumulation cycle (e.g., sum=0, count=0 for MEAN)."""
+        ...
+
+
+class MeanAccumulator:
     def __init__(self, reduction: Reduce) -> None:
         self.reduction_type = reduction
         self.is_reset = True
-
-    @abstractmethod
-    def append(self, value: Any) -> None:
-        """Updates accumulator with new value (e.g., adds to sum and count for MEAN)."""
-        pass
-
-    @abstractmethod
-    def get_value(self) -> Any:
-        """Returns locally reduced value (e.g., sum/count for MEAN)."""
-        pass
-
-    @abstractmethod
-    def get_state(self) -> dict[str, Any]:
-        """Returns serializable state for cross-rank merge (e.g., {'sum': 10.0, 'count': 5})."""
-        pass
-
-    @classmethod
-    @abstractmethod
-    def get_reduced_value_from_states(cls, states: list[dict[str, Any]]) -> Any:
-        """Merges states from multiple ranks into single reduced value (e.g., total_sum/total_count for MEAN)."""
-        pass
-
-    @abstractmethod
-    def reset(self) -> None:
-        """Clears for next accumulation cycle (e.g., sum=0, count=0 for MEAN)."""
-        pass
-
-
-class MeanAccumulator(MetricAccumulator):
-    def __init__(self, reduction: Reduce) -> None:
-        super().__init__(reduction)
         self.sum = 0.0
         self.count = 0
-        self.is_reset = True
 
     def append(self, value: Any) -> None:
         v = float(value.item() if hasattr(value, "item") else value)
@@ -282,11 +276,11 @@ class MeanAccumulator(MetricAccumulator):
         self.count = 0
 
 
-class SumAccumulator(MetricAccumulator):
+class SumAccumulator:
     def __init__(self, reduction: Reduce) -> None:
-        super().__init__(reduction)
-        self.total = 0.0
+        self.reduction_type = reduction
         self.is_reset = True
+        self.total = 0.0
 
     def append(self, value: Any) -> None:
         v = float(value.item() if hasattr(value, "item") else value)
@@ -308,11 +302,11 @@ class SumAccumulator(MetricAccumulator):
         self.total = 0.0
 
 
-class MaxAccumulator(MetricAccumulator):
+class MaxAccumulator:
     def __init__(self, reduction: Reduce) -> None:
-        super().__init__(reduction)
-        self.max_val = float("-inf")
+        self.reduction_type = reduction
         self.is_reset = True
+        self.max_val = float("-inf")
 
     def append(self, value: Any) -> None:
         v = float(value.item() if hasattr(value, "item") else value)
@@ -337,11 +331,11 @@ class MaxAccumulator(MetricAccumulator):
         self.max_val = float("-inf")
 
 
-class MinAccumulator(MetricAccumulator):
+class MinAccumulator:
     def __init__(self, reduction: Reduce) -> None:
-        super().__init__(reduction)
-        self.min_val = float("inf")
+        self.reduction_type = reduction
         self.is_reset = True
+        self.min_val = float("inf")
 
     def append(self, value: Any) -> None:
         v = float(value.item() if hasattr(value, "item") else value)
@@ -366,13 +360,13 @@ class MinAccumulator(MetricAccumulator):
         self.min_val = float("inf")
 
 
-class StdAccumulator(MetricAccumulator):
+class StdAccumulator:
     def __init__(self, reduction: Reduce) -> None:
-        super().__init__(reduction)
+        self.reduction_type = reduction
+        self.is_reset = True
         self.sum = 0.0
         self.sum_sq = 0.0
         self.count = 0
-        self.is_reset = True
 
     def append(self, value: Any) -> None:
         v = float(value.item() if hasattr(value, "item") else value)
@@ -418,7 +412,7 @@ class StdAccumulator(MetricAccumulator):
         self.count = 0
 
 
-class SampleAccumulator(MetricAccumulator):
+class SampleAccumulator:
     """Accumulator for sample-level metrics with top-k and bottom-k filtering.
 
     Keeps the top-k and bottom-k samples by a given key (e.g., reward).
@@ -432,7 +426,7 @@ class SampleAccumulator(MetricAccumulator):
     def __init__(
         self, reduction: Reduce, top_k: int = 1, bottom_k: int = 1, key: str = "score"
     ):
-        super().__init__(reduction)
+        self.reduction_type = reduction
         self.samples: List[Dict[str, Any]] = []
         self.top_k = top_k
         self.bottom_k = bottom_k
@@ -762,8 +756,9 @@ class MetricCollector:
 ###########
 
 
-class LoggerBackend(ABC):
-    """Abstract logger_backend for metric logging, e.g. wandb, jsonl, etc.
+@runtime_checkable
+class LoggerBackend(Protocol):
+    """Protocol for metric logging backends, e.g. wandb, jsonl, etc.
 
     Args:
         logging_mode: Logging behavior mode.
@@ -771,14 +766,10 @@ class LoggerBackend(ABC):
         **kwargs: Backend-specific arguments (e.g., project, name, tags for WandB).
     """
 
-    def __init__(
-        self, *, logging_mode: LoggingMode, per_rank_share_run: bool = False, **kwargs
-    ) -> None:
-        self.logging_mode = logging_mode
-        self.per_rank_share_run = per_rank_share_run
-        self.backend_kwargs = kwargs
+    logging_mode: LoggingMode
+    per_rank_share_run: bool
+    backend_kwargs: dict[str, Any]
 
-    @abstractmethod
     async def init(
         self,
         role: BackendRole,
@@ -801,9 +792,8 @@ class LoggerBackend(ABC):
 
         Raises: ValueError if missing metadata for shared local init.
         """
-        pass
+        ...
 
-    @abstractmethod
     async def log_batch(
         self, metrics: list[Metric], global_step: int, *args, **kwargs
     ) -> None:
@@ -812,7 +802,7 @@ class LoggerBackend(ABC):
         Args:
             metrics: List of Metric objects to log.
             global_step: Step number for x-axis alignment across metrics."""
-        pass
+        ...
 
     def log_stream(self, metric: Metric, global_step: int, *args, **kwargs) -> None:
         """Stream single metric to backend immediately.
@@ -826,9 +816,8 @@ class LoggerBackend(ABC):
             def log_stream(self, metric, global_step):
                 asyncio.create_task(self._async_log(metric, global_step))
         """
-        pass
+        ...
 
-    @abstractmethod
     async def log_samples(self, samples: List[Metric], step: int) -> None:
         """Log samples to backend.
 
@@ -836,26 +825,24 @@ class LoggerBackend(ABC):
             samples: List of Metric objects to log.
             step: Step number for x-axis alignment across metrics.
         """
-        pass
+        ...
 
-    @abstractmethod
-    async def finish(self) -> None:
-        pass
+    async def finish(self) -> None: ...
 
     def get_metadata_for_secondary_ranks(self) -> dict[str, Any] | None:
         """Return sharable state after controller init (e.g., for shared modes). Called only on controller backends."""
         return None
 
 
-class ConsoleBackend(LoggerBackend):
+class ConsoleBackend:
     """Simple console logging of metrics."""
 
     def __init__(
         self, *, logging_mode: LoggingMode, per_rank_share_run: bool = False, **kwargs
     ) -> None:
-        super().__init__(
-            logging_mode=logging_mode, per_rank_share_run=per_rank_share_run, **kwargs
-        )
+        self.logging_mode = logging_mode
+        self.per_rank_share_run = per_rank_share_run
+        self.backend_kwargs = kwargs
         self.process_name = None
 
     async def init(
@@ -889,11 +876,14 @@ class ConsoleBackend(LoggerBackend):
             logger.info(f"[{table_name}] ({len(table_rows)} samples)")
             logger.info(json.dumps(table_rows, indent=2, ensure_ascii=False))
 
+    def get_metadata_for_secondary_ranks(self) -> dict[str, Any] | None:
+        return None
+
     async def finish(self) -> None:
         pass
 
 
-class WandbBackend(LoggerBackend):
+class WandbBackend:
     """
     Weights & Biases logging backend.
 
@@ -923,9 +913,9 @@ class WandbBackend(LoggerBackend):
     def __init__(
         self, *, logging_mode: LoggingMode, per_rank_share_run: bool = False, **kwargs
     ) -> None:
-        super().__init__(
-            logging_mode=logging_mode, per_rank_share_run=per_rank_share_run, **kwargs
-        )
+        self.logging_mode = logging_mode
+        self.per_rank_share_run = per_rank_share_run
+        self.backend_kwargs = kwargs
         self.run = None
         self.process_name = None
         self._tables: dict[str, "wandb.Table"] = {}
